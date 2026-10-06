@@ -1,11 +1,11 @@
 use std::{
     collections::HashMap,
-    error::Error,
+    fmt::Debug,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::{Arc, Mutex},
 };
-use tracing::{error, info, info_span};
+use tracing::{error, info, info_span, instrument};
 use uuid::Uuid;
 
 use crate::command::{Command, Method};
@@ -13,6 +13,7 @@ use crate::command::{Command, Method};
 const MAX_PAYLOAD: usize = 4096;
 const BUF_SIZE: usize = 1024;
 
+#[derive(Debug)]
 pub struct KV {
     store: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -23,6 +24,7 @@ pub enum KVError {
     IOError,
     CommandError(String),
     MutexErr,
+    SetError,
 }
 
 impl std::fmt::Display for KVError {
@@ -32,22 +34,9 @@ impl std::fmt::Display for KVError {
             KVError::IOError => "io error",
             KVError::MutexErr => "mutex error",
             KVError::CommandError(e) => e,
+            KVError::SetError => "set error",
         };
         f.write_str(err)
-    }
-}
-
-impl Error for KVError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-
-    fn description(&self) -> &str {
-        "description() is deprecated; use Display"
-    }
-
-    fn cause(&self) -> Option<&dyn Error> {
-        self.source()
     }
 }
 
@@ -67,19 +56,20 @@ impl KV {
 
         for stream in listener.incoming() {
             let stream = stream.map_err(|_| KVError::IOError)?;
-            match self.handle_client(stream) {
-                Ok(_) => continue,
-                Err(e) => error!("request failed: {}", e),
-            }
+
+            let span = info_span!("client_request", "corr_id" = Uuid::new_v4().to_string());
+            let _guard = span.enter();
+
+            let _ = self.handle_client(stream).inspect_err(|e| {
+                error!("request failed: {}", e);
+            });
         }
 
         Ok(())
     }
 
+    #[instrument(skip(self, stream))]
     fn handle_client(&self, mut stream: TcpStream) -> Result<(), KVError> {
-        let span = info_span!("handle_client", "corr_id" = Uuid::new_v4().to_string());
-        let _guard = span.enter();
-
         info!("request handling start");
 
         let mut bytes: Vec<u8> = vec![];
@@ -111,7 +101,7 @@ impl KV {
             Ok(store) => match c.method {
                 Method::GET => store.get(&c.key).cloned(),
                 Method::SET => {
-                    let value = c.value.unwrap();
+                    let value = c.value.ok_or(KVError::SetError)?;
                     store.insert(c.key, value.clone());
                     Some(value)
                 }

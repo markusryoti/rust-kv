@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use tracing::info;
+use tracing::error;
 
 #[derive(Debug)]
 pub struct Command {
@@ -59,8 +59,6 @@ impl Command {
         let p = s.split_whitespace();
         let values: Vec<&str> = p.into_iter().collect();
 
-        info!(num_values = values.len(), "num of parsed values");
-
         let r = match values.len() {
             2 => {
                 let method = values
@@ -95,7 +93,10 @@ impl Command {
                     value: Some(values.last().ok_or(CommandErr::ParseError)?.to_string()),
                 }
             }
-            _ => return Err(CommandErr::ParseError),
+            _ => {
+                error!(num_values = values.len(), "invalid number of values");
+                return Err(CommandErr::ParseError);
+            }
         };
 
         Ok(r)
