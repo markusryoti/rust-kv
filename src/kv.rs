@@ -1,21 +1,22 @@
 use std::{
-    collections::HashMap,
     fmt::Debug,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex},
 };
 use tracing::{error, info, info_span, instrument};
 use uuid::Uuid;
 
-use crate::command::{Command, Method};
+use crate::{
+    command::{Command, Method},
+    store::Store,
+};
 
 const MAX_PAYLOAD: usize = 4096;
 const BUF_SIZE: usize = 1024;
 
 #[derive(Debug)]
 pub struct KV {
-    store: Arc<Mutex<HashMap<String, String>>>,
+    store: Store,
 }
 
 #[derive(Debug)]
@@ -43,7 +44,7 @@ impl std::fmt::Display for KVError {
 impl KV {
     pub fn new() -> Self {
         KV {
-            store: Arc::new(Mutex::new(HashMap::new())),
+            store: Store::new(),
         }
     }
 
@@ -97,21 +98,15 @@ impl KV {
 
         info!(method = c.method.to_string(), "command parsed");
 
-        let result = match &mut self.store.lock() {
-            Ok(store) => match c.method {
-                Method::GET => store.get(&c.key).cloned(),
-                Method::SET => {
-                    let value = c.value.ok_or(KVError::SetError)?;
-                    store.insert(c.key, value.clone());
-                    Some(value)
-                }
-            },
-            Err(_) => return Err(KVError::MutexErr),
+        let result = match c.method {
+            Method::GET => self.store.get(&c.key).map_err(|_| KVError::IOError)?,
+            Method::SET => self
+                .store
+                .set(c.key.clone(), c.value.unwrap_or("".into()))
+                .map_err(|_| KVError::IOError)?,
         };
 
         info!("store operation done");
-
-        let result = result.unwrap_or("".into());
 
         let n_bytes = stream
             .write(result.as_bytes())
