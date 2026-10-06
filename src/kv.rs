@@ -5,6 +5,8 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::{Arc, Mutex},
 };
+use tracing::{error, info, info_span};
+use uuid::Uuid;
 
 use crate::command::{Command, Method};
 
@@ -57,17 +59,29 @@ impl KV {
     }
 
     pub fn listen(self) -> Result<(), KVError> {
+        info!("Starting to listen");
+
         let listener = TcpListener::bind("127.0.0.1:8888").map_err(|_| KVError::BindError)?;
+
+        info!("Listener binded to a port");
 
         for stream in listener.incoming() {
             let stream = stream.map_err(|_| KVError::IOError)?;
-            self.handle_client(stream).map_err(|_| KVError::IOError)?
+            match self.handle_client(stream) {
+                Ok(_) => continue,
+                Err(e) => error!("request failed: {}", e),
+            }
         }
 
         Ok(())
     }
 
     fn handle_client(&self, mut stream: TcpStream) -> Result<(), KVError> {
+        let span = info_span!("handle_client", "corr_id" = Uuid::new_v4().to_string());
+        let _guard = span.enter();
+
+        info!("request handling start");
+
         let mut bytes: Vec<u8> = vec![];
 
         let mut read_bytes = 0;
@@ -86,27 +100,34 @@ impl KV {
             }
         }
 
+        info!(num_bytes = read_bytes, "request read");
+
         let s = std::str::from_utf8(&bytes).map_err(|_| KVError::IOError)?;
         let c = Command::from(s).map_err(|e| KVError::CommandError(e.to_string()))?;
 
-        let result = if let Ok(store) = &mut self.store.lock() {
-            match c.method {
+        info!(method = c.method.to_string(), "command parsed");
+
+        let result = match &mut self.store.lock() {
+            Ok(store) => match c.method {
                 Method::GET => store.get(&c.key).cloned(),
                 Method::SET => {
                     let value = c.value.unwrap();
                     store.insert(c.key, value.clone());
                     Some(value)
                 }
-            }
-        } else {
-            return Err(KVError::MutexErr);
+            },
+            Err(_) => return Err(KVError::MutexErr),
         };
+
+        info!("store operation done");
 
         let result = result.unwrap_or("".into());
 
-        let _ = stream
+        let n_bytes = stream
             .write(result.as_bytes())
             .map_err(|_| KVError::IOError)?;
+
+        info!(num_bytes = n_bytes, "result written to client socket");
 
         Ok(())
     }
