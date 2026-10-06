@@ -39,6 +39,7 @@ impl Display for Method {
 
 #[derive(Debug)]
 pub enum CommandErr {
+    InvalidCommand,
     ParseError,
     MethodErr,
 }
@@ -48,6 +49,7 @@ impl std::fmt::Display for CommandErr {
         let str = match self {
             CommandErr::ParseError => "failed to parse",
             CommandErr::MethodErr => "invalid method",
+            CommandErr::InvalidCommand => "invalid command",
         };
         f.write_str(str)
     }
@@ -67,7 +69,7 @@ impl Command {
                     .parse::<Method>()?;
 
                 if method != Method::GET {
-                    return Err(CommandErr::MethodErr);
+                    return Err(CommandErr::InvalidCommand);
                 }
 
                 Command {
@@ -84,7 +86,7 @@ impl Command {
                     .map_err(|_| CommandErr::ParseError)?;
 
                 if method != Method::SET {
-                    return Err(CommandErr::MethodErr);
+                    return Err(CommandErr::InvalidCommand);
                 }
 
                 Command {
