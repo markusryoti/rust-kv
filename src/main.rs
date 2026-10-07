@@ -1,11 +1,13 @@
+use std::sync::Arc;
+
 use rust_kv::kv::KV;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let kv = KV::new();
+    let kv = Arc::new(KV::new());
 
-    KV::listen(kv.into()).expect("to work");
+    kv.listen().expect("to work");
 
     Ok(())
 }

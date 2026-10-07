@@ -60,8 +60,7 @@ impl KV {
         info!("Starting to listen");
 
         for _ in 0..4 {
-            // self.worker();
-            KV::worker(self.clone());
+            KV::worker(Arc::clone(&self));
         }
 
         let listener = TcpListener::bind("127.0.0.1:8888").map_err(|_| KVError::BindError)?;
@@ -78,11 +77,19 @@ impl KV {
 
     fn worker(self: Arc<Self>) {
         thread::spawn(move || {
-            let r = self.rx.lock().unwrap();
+            loop {
+                let stream = {
+                    let rx = self.rx.lock().expect("to work");
 
-            while let Ok(stream) = r.recv() {
+                    match rx.recv() {
+                        Ok(stream) => stream,
+                        Err(_) => return,
+                    }
+                };
+
                 let span = info_span!("client_request", "corr_id" = Uuid::new_v4().to_string());
                 let _guard = span.enter();
+
                 let _ = self.handle_client(stream).inspect_err(|e| {
                     error!("request failed: {}", e);
                 });
