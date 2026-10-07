@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let kv = KV::new();
 
-    kv.listen().expect("to work");
+    KV::listen(kv.into()).expect("to work");
 
     Ok(())
 }

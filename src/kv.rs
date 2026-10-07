@@ -2,6 +2,11 @@ use std::{
     fmt::Debug,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
+    thread,
 };
 use tracing::{error, info, info_span, instrument};
 use uuid::Uuid;
@@ -17,6 +22,8 @@ const BUF_SIZE: usize = 1024;
 #[derive(Debug)]
 pub struct KV {
     store: Store,
+    tx: Sender<TcpStream>,
+    rx: Arc<Mutex<Receiver<TcpStream>>>,
 }
 
 #[derive(Debug)]
@@ -24,7 +31,6 @@ pub enum KVError {
     BindError,
     IOError,
     CommandError(String),
-    MutexErr,
     SetError,
 }
 
@@ -33,7 +39,6 @@ impl std::fmt::Display for KVError {
         let err = match self {
             KVError::BindError => "bind error",
             KVError::IOError => "io error",
-            KVError::MutexErr => "mutex error",
             KVError::CommandError(e) => e,
             KVError::SetError => "set error",
         };
@@ -43,13 +48,21 @@ impl std::fmt::Display for KVError {
 
 impl KV {
     pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel::<TcpStream>();
         KV {
             store: Store::new(),
+            tx,
+            rx: Arc::new(Mutex::new(rx)),
         }
     }
 
-    pub fn listen(self) -> Result<(), KVError> {
+    pub fn listen(self: Arc<Self>) -> Result<(), KVError> {
         info!("Starting to listen");
+
+        for _ in 0..4 {
+            // self.worker();
+            KV::worker(self.clone());
+        }
 
         let listener = TcpListener::bind("127.0.0.1:8888").map_err(|_| KVError::BindError)?;
 
@@ -57,16 +70,24 @@ impl KV {
 
         for stream in listener.incoming() {
             let stream = stream.map_err(|_| KVError::IOError)?;
-
-            let span = info_span!("client_request", "corr_id" = Uuid::new_v4().to_string());
-            let _guard = span.enter();
-
-            let _ = self.handle_client(stream).inspect_err(|e| {
-                error!("request failed: {}", e);
-            });
+            self.tx.send(stream).map_err(|_| KVError::IOError)?;
         }
 
         Ok(())
+    }
+
+    fn worker(self: Arc<Self>) {
+        thread::spawn(move || {
+            let r = self.rx.lock().unwrap();
+
+            while let Ok(stream) = r.recv() {
+                let span = info_span!("client_request", "corr_id" = Uuid::new_v4().to_string());
+                let _guard = span.enter();
+                let _ = self.handle_client(stream).inspect_err(|e| {
+                    error!("request failed: {}", e);
+                });
+            }
+        });
     }
 
     #[instrument(skip(self, stream))]
