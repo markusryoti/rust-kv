@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let kv = Arc::new(KV::new());
 
-    kv.listen(8).expect("to work");
+    kv.listen().expect("to work");
 
     Ok(())
 }

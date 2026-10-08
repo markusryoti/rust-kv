@@ -2,11 +2,7 @@ use std::{
     fmt::Debug,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
-    },
-    thread,
+    sync::Arc,
 };
 use tracing::{error, info, info_span, instrument};
 use uuid::Uuid;
@@ -14,6 +10,7 @@ use uuid::Uuid;
 use crate::{
     command::{Command, Method},
     store::Store,
+    thread_pool::ThreadPool,
 };
 
 const MAX_PAYLOAD: usize = 4096;
@@ -22,8 +19,7 @@ const BUF_SIZE: usize = 1024;
 #[derive(Debug)]
 pub struct KV {
     store: Store,
-    tx: Sender<TcpStream>,
-    rx: Arc<Mutex<Receiver<TcpStream>>>,
+    pool: ThreadPool,
 }
 
 #[derive(Debug)]
@@ -48,20 +44,19 @@ impl std::fmt::Display for KVError {
 
 impl KV {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<TcpStream>();
+        let pool = ThreadPool::new(4);
         KV {
             store: Store::new(),
-            tx,
-            rx: Arc::new(Mutex::new(rx)),
+            pool,
         }
     }
 
-    pub fn listen(self: Arc<Self>, num_workers: usize) -> Result<(), KVError> {
+    pub fn listen(self: Arc<Self>) -> Result<(), KVError> {
         info!("Starting to listen");
 
-        for i in 0..num_workers {
-            KV::worker(Arc::clone(&self), i);
-        }
+        let s = Arc::clone(&self);
+
+        s.pool.start();
 
         info!("All workers started");
 
@@ -71,34 +66,22 @@ impl KV {
 
         for stream in listener.incoming() {
             let stream = stream.map_err(|_| KVError::IOError)?;
-            self.tx.send(stream).map_err(|_| KVError::IOError)?;
-        }
 
-        Ok(())
-    }
+            let s = s.clone();
 
-    fn worker(self: Arc<Self>, worker_id: usize) {
-        thread::spawn(move || {
-            loop {
-                let stream = {
-                    let rx = self.rx.lock().expect("to work");
-
-                    match rx.recv() {
-                        Ok(stream) => stream,
-                        Err(_) => return,
-                    }
-                };
-
+            let f = move || {
                 let span = info_span!("client_request", "corr_id" = Uuid::new_v4().to_string());
                 let _guard = span.enter();
 
-                let _ = self.handle_client(stream).inspect_err(|e| {
+                let _ = s.handle_client(stream).inspect_err(|e| {
                     error!("request failed: {}", e);
                 });
-            }
-        });
+            };
 
-        info!("Worker {} started", worker_id);
+            let _ = self.pool.enqueue(Box::new(f));
+        }
+
+        Ok(())
     }
 
     #[instrument(skip(self, stream))]
