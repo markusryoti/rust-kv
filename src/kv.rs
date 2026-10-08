@@ -56,12 +56,14 @@ impl KV {
         }
     }
 
-    pub fn listen(self: Arc<Self>) -> Result<(), KVError> {
+    pub fn listen(self: Arc<Self>, num_workers: usize) -> Result<(), KVError> {
         info!("Starting to listen");
 
-        for _ in 0..4 {
-            KV::worker(Arc::clone(&self));
+        for i in 0..num_workers {
+            KV::worker(Arc::clone(&self), i);
         }
+
+        info!("All workers started");
 
         let listener = TcpListener::bind("127.0.0.1:8888").map_err(|_| KVError::BindError)?;
 
@@ -75,7 +77,7 @@ impl KV {
         Ok(())
     }
 
-    fn worker(self: Arc<Self>) {
+    fn worker(self: Arc<Self>, worker_id: usize) {
         thread::spawn(move || {
             loop {
                 let stream = {
@@ -95,6 +97,8 @@ impl KV {
                 });
             }
         });
+
+        info!("Worker {} started", worker_id);
     }
 
     #[instrument(skip(self, stream))]
