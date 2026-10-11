@@ -28,6 +28,7 @@ pub enum KVError {
     IOError,
     CommandError(String),
     SetError,
+    EnqueueError,
 }
 
 impl std::fmt::Display for KVError {
@@ -37,6 +38,7 @@ impl std::fmt::Display for KVError {
             KVError::IOError => "io error",
             KVError::CommandError(e) => e,
             KVError::SetError => "set error",
+            KVError::EnqueueError => "enqueue error",
         };
         f.write_str(err)
     }
@@ -62,18 +64,20 @@ impl KV {
 
         for stream in listener.incoming() {
             let stream = stream.map_err(|_| KVError::IOError)?;
-            let st = self.store.clone();
+            let store = Arc::clone(&self.store);
 
             let f = move || {
                 let span = info_span!("client_request", "corr_id" = Uuid::new_v4().to_string());
                 let _guard = span.enter();
 
-                let _ = handle_client(stream, st).inspect_err(|e| {
+                let _ = handle_client(stream, store).inspect_err(|e| {
                     error!("request failed: {}", e);
                 });
             };
 
-            let _ = self.pool.enqueue(Box::new(f));
+            self.pool
+                .enqueue(Box::new(f))
+                .map_err(|_| KVError::EnqueueError)?;
         }
 
         Ok(())
@@ -110,15 +114,15 @@ fn handle_client(mut stream: TcpStream, store: Arc<Store>) -> Result<(), KVError
 
     info!(num_bytes = read_bytes, "request read");
 
-    let s = std::str::from_utf8(&bytes).map_err(|_| KVError::IOError)?;
-    let c = Command::from(s).map_err(|e| KVError::CommandError(e.to_string()))?;
+    let str_payload = std::str::from_utf8(&bytes).map_err(|_| KVError::IOError)?;
+    let cmd = Command::from(str_payload).map_err(|e| KVError::CommandError(e.to_string()))?;
 
-    info!(method = c.method.to_string(), "command parsed");
+    info!(method = cmd.method.to_string(), "command parsed");
 
-    let result = match c.method {
-        Method::GET => store.get(&c.key).map_err(|_| KVError::IOError)?,
+    let result = match cmd.method {
+        Method::GET => store.get(&cmd.key).map_err(|_| KVError::IOError)?,
         Method::SET => store
-            .set(c.key.clone(), c.value.unwrap_or("".into()))
+            .set(cmd.key.clone(), cmd.value.unwrap_or("".into()))
             .map_err(|_| KVError::IOError)?,
     };
 
